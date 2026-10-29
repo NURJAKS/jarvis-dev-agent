@@ -73,14 +73,25 @@ flowchart LR
     LLM --> OUT["Rich Markdown panels<br/>+ optional TTS voice (Gemini TTS)"]
 ```
 
+### ⚡ Dual-Engine Architecture: Standalone by Default
+
+> **Works out of the box with just a Gemini/Groq key; optionally supercharged by OpenClaw for autonomous tool execution.**
+
+J.A.R.V.I.S. operates on a pragmatic two-tier engine design:
+
+1. **Standalone Mode (Zero Runtime Dependencies):**
+   Anyone cloning this repo can immediately run `jarvis review`, `jarvis triage`, `jarvis trace`, `jarvis ask`, and the interactive `repl` with just a standard `GEMINI_API_KEY` (or `GROQ_API_KEY` / local `Ollama`). It speaks directly to the Gemini 2.5 Flash REST API without requiring any external agent runtime or daemon.
+2. **Supercharged Mode (OpenClaw Engine):**
+   If the optional OpenClaw runtime (`openclaw`) is detected on your system, J.A.R.V.I.S. activates its full autonomous tool loop: multi-file code editing in isolated `git worktree` sandboxes (`jarvis task`), persistent agent sessions, and the interactive curses TUI. If OpenClaw is absent, commands gracefully degrade to direct LLM turns instead of crashing.
+
 ### Design decisions worth calling out
 
 - **Deterministic before generative.** Intent routing is pure regex over a normalized transcript — fast (sub-millisecond), testable and free. The LLM is only invoked once a workflow has collected real context. The router is covered by unit tests in [`tests/`](tests/).
-- **Three-tier provider failover.** A quota detector (`429`, `RESOURCE_EXHAUSTED`, `rate_limit`) transparently drops from the primary agent to **Groq LPU** (token-streamed over SSE) and finally to a **local Ollama** model — the assistant keeps working offline or on an exhausted API plan.
+- **Three-tier provider failover.** A quota detector (`429`, `RESOURCE_EXHAUSTED`, `rate_limit`) transparently drops from Gemini 2.5 Flash to **Groq LPU** (token-streamed over SSE) and finally to a **local Ollama** model — the assistant keeps working offline or on an exhausted API plan.
 - **Physical isolation for autonomous edits.** `jarvis task` never writes to your checkout. Every run gets its own worktree and branch, so you review the result like a teammate's PR and merge or discard it.
 - **Audio DSP at the edge.** A 120 Hz high-pass filter removes laptop fan rumble and a 2.5x gain stage lifts quiet speech *before* STT — measurably fewer misrecognitions of short commands.
 - **STT-aware vocabulary.** An acoustic normalizer repairs the typical Whisper confusions for developer jargon (`гит див → git diff`, `кубер → kubernetes`, `ворктри → worktree`, `пулреквест → PR`).
-- **Graceful degradation everywhere.** No microphone, no `gh`, no API key or no network — each workflow detects it and falls back instead of crashing.
+- **Graceful degradation everywhere.** No microphone, no `gh`, no OpenClaw runtime, or no network — each workflow detects it and falls back cleanly instead of throwing unhandled exceptions.
 
 ---
 
@@ -100,13 +111,13 @@ install -m 755 jarvis.py ~/.local/bin/jarvis
 
 | Dependency | Needed for |
 | :--- | :--- |
-| Python 3.10+ | everything |
-| `ffmpeg` + PulseAudio / PipeWire | voice input |
-| [`gh`](https://cli.github.com/) (authenticated) | `triage`, `focus` |
-| `GEMINI_API_KEY` | primary reasoning, STT fallback, TTS |
-| `GROQ_API_KEY` *(optional)* | Whisper STT + fast LLM failover |
-| [Ollama](https://ollama.com) *(optional)* | fully offline fallback |
-| OpenClaw agent runtime *(optional)* | tool-using agent turns, `task`, `tui` |
+| Python 3.10+ | core CLI & all standard workflows |
+| `GEMINI_API_KEY` | standalone LLM turns, pre-flight code review, STT fallback, TTS |
+| `ffmpeg` + PulseAudio / PipeWire *(optional)* | push-to-talk voice capture |
+| [`gh`](https://cli.github.com/) *(optional)* | GitHub Actions CI `triage` and morning `focus` digest |
+| `GROQ_API_KEY` *(optional)* | Whisper Large v3 Turbo STT + fast LLM failover |
+| [Ollama](https://ollama.com) *(optional)* | 100% offline local model fallback (`qwen2.5-coder:7b`) |
+| OpenClaw runtime *(optional)* | supercharges autonomous worktree edits (`jarvis task`) and curses TUI |
 
 ### Usage
 

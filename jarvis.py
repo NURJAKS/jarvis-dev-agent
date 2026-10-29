@@ -59,6 +59,16 @@ HISTORY_FILE = Path.home() / ".jarvis_history"
 # Global state for voice output (Default: False for quiet operation in class/library)
 VOICE_OUTPUT_ENABLED = False
 
+def has_openclaw_runtime() -> bool:
+    """Check if the OpenClaw agent runtime binary is physically present and executable."""
+    if not OPENCLAW_BIN:
+        return False
+    bin_str = str(OPENCLAW_BIN)
+    if os.path.sep in bin_str:
+        p = Path(bin_str)
+        return p.is_file() and os.access(p, os.X_OK)
+    return shutil.which(bin_str) is not None
+
 
 def get_gemini_api_key() -> str:
     """Retrieve Gemini API key from environment, openclaw .env or config."""
@@ -468,8 +478,52 @@ def is_llm_quota_error(text: str) -> bool:
     return any(sig in low for sig in quota_signals)
 
 
+def direct_gemini_turn(prompt: str, stream: bool = True) -> Optional[str]:
+    """Direct standalone turn against Gemini 2.5 Flash REST API without requiring OpenClaw."""
+    api_key = get_gemini_api_key()
+    if not api_key:
+        return None
+    try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "systemInstruction": {
+                "parts": [{
+                    "text": (
+                        "You are J.A.R.V.I.S. — an elite, concise, highly competent engineering assistant "
+                        "and Tech Lead. Answer directly with code, structured markdown, and no generic fluff."
+                    )
+                }]
+            },
+            "generationConfig": {"temperature": 0.3}
+        }
+        r = requests.post(url, json=payload, timeout=60)
+        if r.status_code == 200:
+            data = r.json()
+            candidates = data.get("candidates", [])
+            if candidates:
+                text = candidates[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+                if text:
+                    if stream:
+                        console.print(Markdown(text))
+                    return text.strip()
+    except Exception:
+        pass
+    return None
+
+
 def fallback_llm_turn(prompt: str, stream: bool = True) -> str:
-    """Auto-failover to Groq LPU (Qwen 3.8 27B, 1s response) and Ollama when OpenClaw / Gemini hit 429 quota."""
+    """Three-tier resilient LLM execution chain:
+    Tier 1: Direct Gemini 2.5 Flash REST API (standalone mode & quota failover)
+    Tier 2: Ultra-low latency Groq LPU (Qwen 3.8 27B)
+    Tier 3: Local offline Ollama (qwen2.5-coder:7b)
+    """
+    # 1. Direct Gemini 2.5 Flash REST API
+    gemini_res = direct_gemini_turn(prompt, stream=stream)
+    if gemini_res:
+        return gemini_res
+
+    # 2. Groq LPU failover
     groq_key = get_groq_api_key()
     if groq_key:
         try:
@@ -518,7 +572,7 @@ def fallback_llm_turn(prompt: str, stream: bool = True) -> str:
         except Exception:
             pass
 
-    # Secondary fallback: local Ollama
+    # 3. Local offline Ollama
     try:
         console.print("[dim yellow]🔄 Переключение на локальный Ollama (qwen2.5-coder:7b)...[/]\n")
         r = requests.post(
@@ -535,7 +589,7 @@ def fallback_llm_turn(prompt: str, stream: bool = True) -> str:
     except Exception:
         pass
 
-    return "❌ К сожалению, все провайдеры LLM временно недоступны."
+    return "❌ К сожалению, все провайдеры LLM временно недоступны. Проверьте GEMINI_API_KEY или GROQ_API_KEY."
 
 
 def run_openclaw_agent(
@@ -544,7 +598,9 @@ def run_openclaw_agent(
     cwd: Optional[str] = None,
     session_id: Optional[str] = None
 ) -> str:
-    """Run an OpenClaw agent turn with spinner and return the text reply."""
+    """Run an agent turn. If OpenClaw runtime is absent, runs standalone via direct LLM."""
+    if not has_openclaw_runtime():
+        return fallback_llm_turn(prompt, stream=False)
     with Progress(
         SpinnerColumn(spinner_name="dots"),
         TextColumn("[bold cyan]{task.description}"),
@@ -575,6 +631,8 @@ def run_openclaw_agent(
                 cwd=cwd,
                 timeout=180
             )
+        except (FileNotFoundError, OSError):
+            return fallback_llm_turn(prompt, stream=False)
         except subprocess.TimeoutExpired:
             return "❌ Превышено время ожидания ответа от OpenClaw Gateway (180s)."
 
@@ -626,7 +684,9 @@ def stream_openclaw_turn(
     cwd: Optional[str] = None,
     spinner_text: str = "⚡ Джарвис обрабатывает запрос..."
 ) -> str:
-    """Streams OpenClaw agent output live to the terminal with token-by-token feel and Ctrl+C interrupt handling."""
+    """Streams output live. Falls back cleanly to direct LLM if OpenClaw runtime is missing."""
+    if not has_openclaw_runtime():
+        return fallback_llm_turn(prompt, stream=True)
     env = os.environ.copy()
     env["PATH"] = f"{EXTRA_NODE_PATH}:{env.get('PATH', '')}" if EXTRA_NODE_PATH else env.get("PATH", "")
 
@@ -1185,6 +1245,10 @@ def cmd_ask(question: str):
 def cmd_tui():
     """Launch interactive curses terminal UI from OpenClaw."""
     cmd_banner()
+    if not has_openclaw_runtime():
+        console.print("[bold yellow]ℹ Curses TUI requires the optional OpenClaw runtime.[/]")
+        console.print("[dim]Use [bold white]jarvis[/] or [bold white]jarvis repl[/] for the standard terminal shell.[/]\n")
+        return
     console.print("[dim]Запуск интерактивного терминала OpenClaw TUI... (Ctrl+C для выхода)[/]\n")
     env = os.environ.copy()
     env["PATH"] = f"{EXTRA_NODE_PATH}:{env.get('PATH', '')}" if EXTRA_NODE_PATH else env.get("PATH", "")
